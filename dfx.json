@@ -1,0 +1,34 @@
+{
+  "canisters": {
+    "project_rust_backend": {
+      "candid": "src/project_rust_backend/project_rust_backend.did",
+      "package": "project_rust_backend",
+      "type": "rust",
+      "metadata": [
+                {
+                    "name": "candid:service",
+                    "networks": ["local", "ic"],
+                    "visibility": "public"
+                }
+            ]
+    },
+    "project_rust_frontend": {
+      "dependencies": [
+        "project_rust_backend"
+      ],
+      "source": [
+        "src/project_rust_frontend/dist"
+      ],
+      "type": "assets",
+      "workspace": "project_rust_frontend"
+    }
+  },
+  "defaults": {
+    "build": {
+      "args": "",
+      "packtool": ""
+    }
+  },
+  "output_env_file": ".env",
+  "version": 1
+}

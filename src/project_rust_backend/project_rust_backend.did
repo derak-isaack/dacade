@@ -1,0 +1,14 @@
+type Event = record {
+  id : text;
+  date : text;
+  name : text;
+  tickets_sold : nat32;
+  total_tickets : nat32;
+};
+type Ticket = record { buyer : principal; event_id : text };
+service : () -> {
+  buy_ticket : (text) -> ();
+  create_event : (text, text, text, nat32) -> ();
+  get_event : (text) -> (opt Event) query;
+  get_tickets : () -> (vec Ticket) query;
+}
