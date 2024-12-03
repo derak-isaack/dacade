@@ -3,6 +3,18 @@ use ic_cdk::api::trap;
 use ic_cdk::storage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::cell::RefCell;
+
+thread_local! {
+    static NEXT_ID: RefCell<u64> = RefCell::new(0);
+    static FILES: RefCell<HashMap<u64, File>> = RefCell::new(HashMap::new());
+}
+
+#[derive(CandidType, Serialize, Deserialize, Clone)]
+struct File {
+    id: u64,
+    data: Vec<u8>,
+}
 
 #[derive(Serialize, Deserialize, Clone, CandidType)]
 struct Event {
@@ -104,6 +116,41 @@ fn get_system_mut() -> &'static mut TicketingSystem {
 
 #[ic_cdk::query]
 fn __export_candid_interface() -> String {
-    ic_cdk::export_candid!(); // Exports the Candid interface
+    ic_cdk::export_candid!(); 
     __export_service()
 }
+
+
+#[derive(CandidType, Serialize, Deserialize, Clone)]
+struct Image {
+    id: u64,
+    data: Vec<Vec<u8>>,
+}
+
+#[ic_cdk::update]
+fn upload_photo(file_data: Vec<u8>) -> u64 {
+    NEXT_ID.with(|next_id| {
+        let id = *next_id.borrow();
+        *next_id.borrow_mut() += 1;
+
+        FILES.with(|files| {
+            files.borrow_mut().insert(
+                id,
+                File {
+                    id,
+                    data: file_data,
+                }
+            );
+        });
+        id
+    })
+}
+
+#[ic_cdk::query]
+fn get_file(id: u64) -> Option<File> {
+    FILES.with(|files| {
+        files.borrow().get(&id).cloned()
+    })
+}
+
+ic_cdk::export_candid!();
