@@ -5,10 +5,19 @@ type Event = record {
   tickets_sold : nat32;
   total_tickets : nat32;
 };
-type Ticket = record { buyer : principal; event_id : text };
+type File = record { id : nat64; data : blob };
+type Result = variant { Ok; Err : text };
+type Ticket = record {
+  purchase_date : text;
+  buyer : principal;
+  event_id : text;
+  ticket_number : nat32;
+};
 service : () -> {
-  buy_ticket : (text) -> ();
+  buy_ticket : (text) -> (Result);
   create_event : (text, text, text, nat32) -> ();
   get_event : (text) -> (opt Event) query;
+  get_file : (nat64) -> (opt File) query;
   get_tickets : () -> (vec Ticket) query;
+  upload_photo : (blob) -> (nat64);
 }
