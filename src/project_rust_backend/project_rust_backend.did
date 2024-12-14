@@ -15,9 +15,9 @@ type Ticket = record {
 };
 service : () -> {
   buy_ticket : (text) -> (Result);
-  create_event : (nat64, text, text, nat32) -> ();
-  get_event : (text) -> (opt Event) query;
+  create_event : (text, text, nat32) -> (Event);
+  get_event : (nat64) -> (opt Event) query;
   get_file : (nat64) -> (opt File) query;
   get_tickets : () -> (vec Ticket) query;
-  upload_photo : (blob) -> (nat64);
+  upload_photo : (blob) -> (File);
 }

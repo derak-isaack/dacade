@@ -1,25 +1,15 @@
-use candid::{CandidType, Principal, Nat};
+use candid::{CandidType, Principal, Nat, Decode, Encode};
 use ic_cdk::api::trap;
 use ic_cdk::storage;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::cell::RefCell;
+use std::{borrow::Cow, cell::RefCell};
 use ic_cdk::api::call::CallResult;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
-use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
 
 
-thread_local! {
-    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
-        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
-
-    static NEXT_ID: RefCell<StableBTreeMap<u8, u64, VirtualMemory<DefaultMemoryImpl>>> = 
-        RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3)))));
-
-    static FILES: RefCell<HashMap<u64, File>> = RefCell::new(HashMap::new());
-       
-}
-
+type Memory1 = VirtualMemory<DefaultMemoryImpl>;
 
 #[derive(CandidType, Serialize, Deserialize, Clone)]
 struct File {
@@ -29,7 +19,7 @@ struct File {
 
 #[derive(Serialize, Deserialize, Clone, CandidType)]
 struct Event {
-    id: u64,
+    id : u64, 
     name: String,
     date: String,
     total_tickets: u32,
@@ -50,6 +40,61 @@ struct TicketingSystem {
     tickets: Vec<Ticket>,
 }
 
+impl Storable for Event {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
+    }
+
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+}
+
+impl BoundedStorable for Event {
+    const MAX_SIZE: u32 = 1024; // Maximum size in bytes for a single note
+    const IS_FIXED_SIZE: bool = false;
+}
+
+impl Storable for File {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
+    }
+
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+}
+
+impl BoundedStorable for File {
+    const MAX_SIZE: u32 = 2048; 
+    const IS_FIXED_SIZE: bool = false;
+}
+
+
+thread_local! {
+    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
+        MemoryManager::init(DefaultMemoryImpl::default())
+    );
+
+    static EVENTS: RefCell<StableBTreeMap<u64, Event, Memory1>> = RefCell::new(
+        StableBTreeMap::init(
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(0)))
+        )
+    );
+
+    static EVENTPHOTOS: RefCell<StableBTreeMap<u64, File, Memory1>> = RefCell::new(
+        StableBTreeMap::init(
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(5)))
+        )
+    );
+
+    static COUNTER: RefCell<Cell<u64, Memory1>> = RefCell::new(
+        Cell::init(
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(1))),
+            0
+        ).unwrap()
+    );
+}
 
 static mut TICKETING_SYSTEM: Option<TicketingSystem> = None;
 
@@ -60,30 +105,25 @@ fn init() {
     }
 }
 
-fn generate_next_id() -> u64 {
-    NEXT_ID.with(|next_id| {
-        let mut next_id = next_id.borrow_mut();
-        let current_id = next_id.get(&0).unwrap_or(0);
-        let new_id = current_id + 1;
-        next_id.insert(0, new_id);
-        new_id
-    })
-}
-
 #[ic_cdk::update]
-fn create_event(id: u64, name: String, date: String, total_tickets: u32) {
-    let mut system = get_system_mut();
-    if system.events.contains_key(&id.to_string()) {
-        trap("Event ID already exists!");
-    }
+fn create_event(name: String, date: String, total_tickets: u32) -> Event {
+    let id = COUNTER.with(|counter| {
+        let current_value = *counter.borrow().get();
+        counter.borrow_mut().set(current_value + 1).unwrap();
+        current_value
+    });
     let event = Event {
-        id: generate_next_id(),
+        id,
         name,
         date,
         total_tickets,
         tickets_sold: 0,
     };
-    system.events.insert(id.to_string(), event);
+    EVENTS.with(|events| {
+        events.borrow_mut().insert(id, event.clone())
+    });
+
+    event 
 }
 
 #[derive(CandidType)]
@@ -107,17 +147,14 @@ async fn buy_ticket(event_id: String) -> Result<(), String> {
     let caller = ic_cdk::caller();
     let mut system = get_system_mut();
     
-    // Validate event exists
     let event = system
         .events
         .get_mut(&event_id)
         .ok_or_else(|| "Event not found".to_string())?;
-
     
     if event.tickets_sold >= event.total_tickets {
         return Err("Event is sold out!".to_string());
     }
-
     
     if system.tickets.iter().any(|ticket| ticket.event_id == event_id && ticket.buyer == caller) {
         return Err("You already have a ticket for this event".to_string());
@@ -140,14 +177,12 @@ async fn buy_ticket(event_id: String) -> Result<(), String> {
 
     let ledger_canister_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai")
         .expect("Invalid ledger canister ID");
-
     
     let result: CallResult<(Result<Nat, String>,)> = 
         ic_cdk::call(ledger_canister_id, "transfer", (transfer_args,)).await;
 
     match result {
         Ok((Ok(_block_index),)) => {
-            
             let ticket = Ticket {
                 event_id: event_id.clone(),
                 buyer: caller,
@@ -169,9 +204,8 @@ async fn buy_ticket(event_id: String) -> Result<(), String> {
 }
 
 #[ic_cdk::query]
-fn get_event(event_id: String) -> Option<Event> {
-    let system = get_system();
-    system.events.get(&event_id).cloned()
+fn get_event(id: u64) -> Option<Event> {
+    EVENTS.with(|events| events.borrow().get(&id))
 }
 
 #[ic_cdk::query]
@@ -180,7 +214,6 @@ fn get_tickets() -> Vec<Ticket> {
     system.tickets.clone()
 }
 
-
 fn get_system() -> &'static TicketingSystem {
     unsafe {
         TICKETING_SYSTEM
@@ -188,7 +221,6 @@ fn get_system() -> &'static TicketingSystem {
             .expect("TicketingSystem not initialized")
     }
 }
-
 
 fn get_system_mut() -> &'static mut TicketingSystem {
     unsafe {
@@ -205,32 +237,28 @@ struct Image {
 }
 
 #[ic_cdk::update]
-fn upload_photo(file_data: Vec<u8>) -> u64 {
-    NEXT_ID.with(|next_id| {
-        let mut next_id_ref = next_id.borrow_mut();
-        let current_id = next_id_ref.get(&0).unwrap_or(0);
-        let id = current_id;
-        next_id_ref.insert(0, id + 1);
+fn upload_photo(file_data: Vec<u8>) -> File {
+    let id = COUNTER.with(|counter| {
+        let current_value = *counter.borrow().get();
+        counter.borrow_mut().set(current_value + 1).unwrap();
+        current_value
+    });
 
-        FILES.with(|files| {
-            files.borrow_mut().insert(
-                id,
-                File {
-                    id,
-                    data: file_data,
-                }
-            );
-        });
-        id
-    })
+    let file = File {
+        id,
+        data: file_data,
+    };
+    
+    EVENTPHOTOS.with(|files| {
+        files.borrow_mut().insert(id, file.clone())
+    });
+
+    file
 }
 
 #[ic_cdk::query]
 fn get_file(id: u64) -> Option<File> {
-    FILES.with(|files| {
-        files.borrow().get(&id).cloned()
-    })
+    EVENTPHOTOS.with(|files| files.borrow().get(&id))
 }
-
 
 ic_cdk::export_candid!();
