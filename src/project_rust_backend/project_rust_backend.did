@@ -1,5 +1,5 @@
 type Event = record {
-  id : text;
+  id : nat64;
   date : text;
   name : text;
   tickets_sold : nat32;
@@ -15,7 +15,7 @@ type Ticket = record {
 };
 service : () -> {
   buy_ticket : (text) -> (Result);
-  create_event : (text, text, text, nat32) -> ();
+  create_event : (nat64, text, text, nat32) -> ();
   get_event : (text) -> (opt Event) query;
   get_file : (nat64) -> (opt File) query;
   get_tickets : () -> (vec Ticket) query;

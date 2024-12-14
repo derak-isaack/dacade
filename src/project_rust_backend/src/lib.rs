@@ -5,11 +5,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::cell::RefCell;
 use ic_cdk::api::call::CallResult;
+use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
+use ic_stable_structures::{DefaultMemoryImpl, StableBTreeMap};
+
 
 thread_local! {
-    static NEXT_ID: RefCell<u64> = RefCell::new(0);
+    static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
+        RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
+
+    static NEXT_ID: RefCell<StableBTreeMap<u8, u64, VirtualMemory<DefaultMemoryImpl>>> = 
+        RefCell::new(StableBTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(3)))));
+
     static FILES: RefCell<HashMap<u64, File>> = RefCell::new(HashMap::new());
+       
 }
+
 
 #[derive(CandidType, Serialize, Deserialize, Clone)]
 struct File {
@@ -19,7 +29,7 @@ struct File {
 
 #[derive(Serialize, Deserialize, Clone, CandidType)]
 struct Event {
-    id: String,
+    id: u64,
     name: String,
     date: String,
     total_tickets: u32,
@@ -50,20 +60,30 @@ fn init() {
     }
 }
 
+fn generate_next_id() -> u64 {
+    NEXT_ID.with(|next_id| {
+        let mut next_id = next_id.borrow_mut();
+        let current_id = next_id.get(&0).unwrap_or(0);
+        let new_id = current_id + 1;
+        next_id.insert(0, new_id);
+        new_id
+    })
+}
+
 #[ic_cdk::update]
-fn create_event(id: String, name: String, date: String, total_tickets: u32) {
+fn create_event(id: u64, name: String, date: String, total_tickets: u32) {
     let mut system = get_system_mut();
-    if system.events.contains_key(&id) {
+    if system.events.contains_key(&id.to_string()) {
         trap("Event ID already exists!");
     }
     let event = Event {
-        id: id.clone(),
+        id: generate_next_id(),
         name,
         date,
         total_tickets,
         tickets_sold: 0,
     };
-    system.events.insert(id, event);
+    system.events.insert(id.to_string(), event);
 }
 
 #[derive(CandidType)]
@@ -178,13 +198,6 @@ fn get_system_mut() -> &'static mut TicketingSystem {
     }
 }
 
-// #[ic_cdk::query]
-// fn __export_candid_interface() -> String {
-//     ic_cdk::export_candid!(); 
-//     __export_service()
-// }
-
-
 #[derive(CandidType, Serialize, Deserialize, Clone)]
 struct Image {
     id: u64,
@@ -194,8 +207,10 @@ struct Image {
 #[ic_cdk::update]
 fn upload_photo(file_data: Vec<u8>) -> u64 {
     NEXT_ID.with(|next_id| {
-        let id = *next_id.borrow();
-        *next_id.borrow_mut() += 1;
+        let mut next_id_ref = next_id.borrow_mut();
+        let current_id = next_id_ref.get(&0).unwrap_or(0);
+        let id = current_id;
+        next_id_ref.insert(0, id + 1);
 
         FILES.with(|files| {
             files.borrow_mut().insert(
@@ -218,4 +233,4 @@ fn get_file(id: u64) -> Option<File> {
 }
 
 
-ic_cdk::export_candid!(); 
+ic_cdk::export_candid!();
