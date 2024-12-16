@@ -14,4 +14,5 @@ ic-cdk = "0.13"
 ic-cdk-timers = "0.6" # Feel free to remove this dependency if you don't need timers
 serde = { version = "1.0", features = ["derive"] }
 ic-stable-structures = "0.5.6"
+ic-ledger-types = "0.14.0"
 

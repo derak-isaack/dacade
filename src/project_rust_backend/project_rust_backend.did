@@ -4,18 +4,20 @@ type Event = record {
   name : text;
   tickets_sold : nat32;
   total_tickets : nat32;
+  price : Tokens;
 };
 type File = record { id : nat64; data : blob };
-type Result = variant { Ok; Err : text };
+type Result = variant { Ok : text; Err : text };
 type Ticket = record {
   purchase_date : text;
   buyer : principal;
   event_id : text;
   ticket_number : nat32;
 };
+type Tokens = record { e8s : nat64 };
 service : () -> {
-  buy_ticket : (text) -> (Result);
-  create_event : (text, text, nat32) -> (Event);
+  buy_ticket : (Tokens) -> (Result);
+  create_event : (text, text, nat32, Tokens) -> (Event);
   get_event : (nat64) -> (opt Event) query;
   get_file : (nat64) -> (opt File) query;
   get_tickets : () -> (vec Ticket) query;

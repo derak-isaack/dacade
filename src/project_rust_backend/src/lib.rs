@@ -1,13 +1,12 @@
-use candid::{CandidType, Principal, Nat, Decode, Encode};
-use ic_cdk::api::trap;
-use ic_cdk::storage;
+use candid::{CandidType, Principal,Decode, Encode};
+// use ic_cdk::api::{caller, call::call};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{borrow::Cow, cell::RefCell};
-use ic_cdk::api::call::CallResult;
+// use ic_cdk::api::call::CallResult;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BoundedStorable, Cell, DefaultMemoryImpl, StableBTreeMap, Storable};
-
+use ic_ledger_types::{AccountIdentifier, BlockIndex, Memo, TransferArgs, Tokens, DEFAULT_SUBACCOUNT, DEFAULT_FEE, MAINNET_LEDGER_CANISTER_ID, transfer};
 
 type Memory1 = VirtualMemory<DefaultMemoryImpl>;
 
@@ -17,9 +16,11 @@ struct File {
     data: Vec<u8>,
 }
 
+
 #[derive(Serialize, Deserialize, Clone, CandidType)]
 struct Event {
     id : u64, 
+    price: Tokens,
     name: String,
     date: String,
     total_tickets: u32,
@@ -51,7 +52,22 @@ impl Storable for Event {
 }
 
 impl BoundedStorable for Event {
-    const MAX_SIZE: u32 = 1024; // Maximum size in bytes for a single note
+    const MAX_SIZE: u32 = 1024;
+    const IS_FIXED_SIZE: bool = false;
+}
+
+impl Storable for Ticket {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Owned(Encode!(self).unwrap())
+    }
+
+    fn from_bytes(bytes: Cow<[u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).unwrap()
+    }
+}
+
+impl BoundedStorable for Ticket {
+    const MAX_SIZE: u32 = 1024;
     const IS_FIXED_SIZE: bool = false;
 }
 
@@ -70,7 +86,6 @@ impl BoundedStorable for File {
     const IS_FIXED_SIZE: bool = false;
 }
 
-
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> = RefCell::new(
         MemoryManager::init(DefaultMemoryImpl::default())
@@ -85,6 +100,12 @@ thread_local! {
     static EVENTPHOTOS: RefCell<StableBTreeMap<u64, File, Memory1>> = RefCell::new(
         StableBTreeMap::init(
             MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(5)))
+        )
+    );
+
+    static TICKETS: RefCell<StableBTreeMap<u64, Ticket, Memory1>> = RefCell::new(
+        StableBTreeMap::init(
+            MEMORY_MANAGER.with(|m| m.borrow().get(MemoryId::new(2)))
         )
     );
 
@@ -106,7 +127,7 @@ fn init() {
 }
 
 #[ic_cdk::update]
-fn create_event(name: String, date: String, total_tickets: u32) -> Event {
+fn create_event(name: String, date: String, total_tickets: u32, price: Tokens) -> Event {
     let id = COUNTER.with(|counter| {
         let current_value = *counter.borrow().get();
         counter.borrow_mut().set(current_value + 1).unwrap();
@@ -115,6 +136,7 @@ fn create_event(name: String, date: String, total_tickets: u32) -> Event {
     let event = Event {
         id,
         name,
+        price,
         date,
         total_tickets,
         tickets_sold: 0,
@@ -126,82 +148,83 @@ fn create_event(name: String, date: String, total_tickets: u32) -> Event {
     event 
 }
 
-#[derive(CandidType)]
-struct Account {
-    owner: Principal,
-    subaccount: Option<[u8; 32]>,
-}
-
-#[derive(CandidType)]
-struct TransferArgs {
-    memo: Nat,
-    amount: Nat,
-    fee: Nat,
-    from_subaccount: Option<[u8; 32]>,
-    to: Account,
-    created_at_time: Option<u64>,
+async fn transfer_to_caller(amount: Tokens) -> Result<BlockIndex, String> {
+    transfer(
+        MAINNET_LEDGER_CANISTER_ID,
+        TransferArgs {
+            memo: Memo(0),
+            amount,
+            fee: DEFAULT_FEE,
+            from_subaccount: None,
+            to: AccountIdentifier::new(&ic_cdk::caller(), &DEFAULT_SUBACCOUNT),
+            created_at_time: None,
+        }
+    )
+    .await
+    .map_err(|e| format!("Call to ledger failed: {:?}", e))? 
+    .map_err(|err| format!("Transfer failed: {:?}", err)) 
 }
 
 #[ic_cdk::update]
-async fn buy_ticket(event_id: String) -> Result<(), String> {
+async fn buy_ticket(price: Tokens) -> Result<String, String> {
     let caller = ic_cdk::caller();
-    let mut system = get_system_mut();
-    
-    let event = system
-        .events
-        .get_mut(&event_id)
-        .ok_or_else(|| "Event not found".to_string())?;
-    
-    if event.tickets_sold >= event.total_tickets {
-        return Err("Event is sold out!".to_string());
-    }
-    
-    if system.tickets.iter().any(|ticket| ticket.event_id == event_id && ticket.buyer == caller) {
-        return Err("You already have a ticket for this event".to_string());
-    }
-    
-    let amount = Nat::from(100_000_000u64); 
-    let fee = Nat::from(10_000u64); 
 
-    let transfer_args = TransferArgs {
-        memo: Nat::from(0u64),
-        amount,
-        fee,
-        from_subaccount: None,
-        to: Account {
-            owner: ic_cdk::id(),
-            subaccount: None,
-        },
-        created_at_time: Some(ic_cdk::api::time()),
+    let mut selected_event = None;
+    let mut selected_event_id = 0;
+
+    EVENTS.with(|events| {
+        let events = events.borrow();
+        for (id, event) in events.iter() {
+            if event.price == price && event.tickets_sold < event.total_tickets {
+                selected_event = Some(event);
+                selected_event_id = id;
+                break;
+            }
+        }
+    });
+
+    let event = selected_event.ok_or_else(|| "No event found with that price.".to_string())?;
+
+    let already_booked = TICKETS.with(|tickets| {
+        let tickets = tickets.borrow();
+        tickets.iter().any(|(_, ticket)| ticket.event_id == selected_event_id.to_string() && ticket.buyer == caller)
+    });
+
+    if already_booked {
+        return Err("You already have a ticket for this event.".to_string());
+    }
+
+    transfer_to_caller(price)
+        .await
+        .map_err(|err| format!("Payment failed: {}", err))?;
+
+    let ticket_number = event.tickets_sold + 1;
+    let ticket = Ticket {
+        event_id: selected_event_id.to_string(),
+        buyer: caller,
+        purchase_date: ic_cdk::api::time().to_string(),
+        ticket_number,
     };
 
-    let ledger_canister_id = Principal::from_text("ryjl3-tyaaa-aaaaa-aaaba-cai")
-        .expect("Invalid ledger canister ID");
-    
-    let result: CallResult<(Result<Nat, String>,)> = 
-        ic_cdk::call(ledger_canister_id, "transfer", (transfer_args,)).await;
+    TICKETS.with(|tickets| {
+        tickets.borrow_mut().insert(ticket_number as u64, ticket.clone())
+    });
+    EVENTS.with(|events| {
+        let mut events = events.borrow_mut();
+        if let Some(mut event) = events.get(&selected_event_id) {
+            let mut updated_event = event.clone();
+            updated_event.tickets_sold += 1;
+            events.insert(selected_event_id, updated_event);
+        }
+    });
 
-    match result {
-        Ok((Ok(_block_index),)) => {
-            let ticket = Ticket {
-                event_id: event_id.clone(),
-                buyer: caller,
-                purchase_date: ic_cdk::api::time().to_string(),
-                ticket_number: event.tickets_sold + 1,
-            };
-
-            system.tickets.push(ticket);
-            event.tickets_sold += 1;
-            Ok(())
-        },
-        Ok((Err(transfer_error),)) => {
-            Err(format!("Payment failed: {}", transfer_error))
-        },
-        Err((code, msg)) => {
-            Err(format!("Transaction failed: {:?} - {}", code, msg))
-        },
-    }
+    Ok(format!(
+        "Successfully booked a ticket for event '{}' at price {:?}. Ticket number: {}.",
+        event.name, price, ticket_number
+    ))
 }
+
+
 
 #[ic_cdk::query]
 fn get_event(id: u64) -> Option<Event> {
@@ -210,8 +233,9 @@ fn get_event(id: u64) -> Option<Event> {
 
 #[ic_cdk::query]
 fn get_tickets() -> Vec<Ticket> {
-    let system = get_system();
-    system.tickets.clone()
+    TICKETS.with(|tickets| {
+        tickets.borrow().iter().map(|(_, ticket)| ticket.clone()).collect()
+    })
 }
 
 fn get_system() -> &'static TicketingSystem {
